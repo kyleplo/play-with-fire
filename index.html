@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Play with Fire Demo</title>
+
+    <script defer src="/__/firebase/9.6.10/firebase-app-compat.js"></script>
+    <script defer src="/__/firebase/9.6.10/firebase-auth-compat.js"></script>
+    <script defer src="/__/firebase/9.6.10/firebase-firestore-compat.js"></script>
+    <script defer src="/__/firebase/init.js"></script>
+
+    <script defer src="https://gh.kyleplo.com/yaww/src/yaww.js"></script>
+    <script defer src="./src/play-with-fire.js"></script>
+  </head>
+  <body>
+    <h2>Play With Fire Demo - Hangman</h2>
+    <div id="init">
+      <p><input type="text" id="gameCode" placeholder="Game Code"> <button id="join">Join a Game</button></p>
+      <p>or <button id="host">Host a Game</button></p>
+      <hr>
+      <p>See source code <a href="https://github.com/kyleplo/play-with-fire" target="_blank">on Github</a>.</p>
+    </div>
+    <div id="connecting" hidden>
+      <p>Connecting...</p>
+    </div>
+    <div id="disconnected" hidden>
+      <p>Disconnected</p>
+    </div>
+    <div id="joinFailed" hidden>
+      <p id="joinFailReason"></p>
+    </div>
+    <div id="hostControls" hidden>
+      <p>The room code is <b id="gameCodeDisplay"></b></p>
+      <p><button id="start">Start Game</button> <button id="close">Close Room</button></p>
+      <h4>Player list (click to kick):</h4>
+      <ul id="players"></ul>
+    </div>
+    <div id="waitingForHost" hidden>
+      <p>Get Ready! Waiting for the host to start the game...</p>
+      <p><input type="text" id="name"> <button id="changeName">Change Name</button></p>
+    </div>
+    <div id="waitingForWord" hidden>
+      <p>Get Ready! Waiting a player to select a word...</p>
+    </div>
+    <div id="pickWord" hidden>
+      <p>Pick a word for everyone to guess: <input type="text" id="wordInput"> <button id="submitWord">Go</button></p>
+    </div>
+    <div id="game" hidden>
+      <canvas id="canvas" width="200" height="200" style="background: #888888"></canvas>
+      <p id="word"></p>
+      <p>Guess a letter: <input type="text" id="guess" maxlength="1"> <button id="submitGuess">Guess</button></p>
+      <h4>Already Guessed:</h4>
+      <ul id="guessed"></ul>
+    </div>
+    <script>
+      const words = ["octopus", "execution", "manifest", "functionality", "parallel", "hallucination", "current", "immobile", "centigram", "attribute", "repository", "integration", "launchpad", "rythmn", "capacitance"];
+      const joinFailReasons = {
+        "room-not-found": "Room not found.",
+        "room-full": "Room is full",
+        "room-locked": "Room is not accepting new players.",
+        "rtc-failed": "Failed to connect to room."
+      };
+
+      var host, player, players, goal, status, guessed;
+      goal = "";
+      status = "";
+      guessed = [];
+      players = {};
+      function switchView(v){
+        document.querySelectorAll("div").forEach(e => {
+          if(e.id === v){
+            e.removeAttribute("hidden");
+          }else{
+            e.setAttribute("hidden", "hidden");
+          }
+        });
+      }
+      function setupPlayer(){
+        player = new PWFMemberClient({
+          db: firebase.firestore(),
+          uid: firebase.auth().currentUser.uid,
+          yaww: {
+            rtc: {
+              iceServers: [
+                {
+                  urls: "stun:stun.l.google.com:19302"
+                },
+                {
+                  urls: "turn:0.peerjs.com:3478",
+                  username:"peerjs",
+                  credential:"peerjsp"
+                }
+              ]
+            }
+          }
+        });
+        player.addEventListener("joinfailed", e => {
+          switchView("joinFailed");
+          document.querySelector("#joinFailReason").textContent = joinFailReasons[e.reason];
+        });
+        player.addEventListener("join", () => {
+          if(host){
+            switchView("hostControls");
+          }else{
+            switchView("waitingForHost");
+          }
+        });
+        player.addEventListener("leave", () => {
+          switchView("disconnected");
+        });
+        player.addEventListener("message", e => {
+          const message = JSON.parse(e.message);
+
+          if(!message.type){
+            return;
+          }
+
+          if(message.type === "menu"){
+            if(host){
+              switchView("hostControls");
+            }else{
+              switchView("waitingForHost");
+            }
+          }else if(message.type === "pickWord"){
+            switchView("pickWord");
+            document.querySelector("#submitGuess").setAttribute("disabled", "disabled");
+          }else if(message.type === "waitingForPickWord"){
+            switchView("waitingForWord");
+            document.querySelector("#submitGuess").removeAttribute("disabled");
+          }else if(message.type === "status"){
+            switchView("game");
+            document.querySelector("#word").textContent = message.status;
+            document.querySelector("#guessed").innerHTML = "";
+            message.guessed.forEach(w => {
+              const guessItem = document.createElement("LI");
+              guessItem.textContent = w;
+              document.querySelector("#guessed").append(guessItem);
+            });
+            const guesses = message.guessed.length;
+            const dead = guesses > Math.min(18 - goal.length, 10);
+            const ctx = document.querySelector("#canvas").getContext("2d");
+            ctx.strokeStyle = "black";
+            ctx.clearRect(0, 0, 200, 200);
+            ctx.beginPath();
+            ctx.moveTo(0, 180);
+            ctx.lineTo(50, 180);
+            ctx.moveTo(25, 180);
+            ctx.lineTo(25, 25);
+            ctx.lineTo(120, 25);
+            ctx.lineTo(120, 50);
+            if(guesses > 0){
+              ctx.moveTo(100, 50);
+              ctx.lineTo(140, 50);
+              ctx.lineTo(140, 90);
+              ctx.lineTo(100, 90);
+              ctx.lineTo(100, 50);
+              ctx.moveTo(110, 80);
+              ctx.lineTo(130, 80);
+              if(dead){
+                ctx.moveTo(110, 60);
+                ctx.lineTo(115, 65);
+                ctx.moveTo(110, 65);
+                ctx.lineTo(115, 60);
+                ctx.moveTo(130, 60);
+                ctx.lineTo(125, 65);
+                ctx.moveTo(130, 65);
+                ctx.lineTo(125, 60);
+              }else{
+                ctx.moveTo(110, 60);
+                ctx.lineTo(110, 65);
+                ctx.moveTo(130, 60);
+                ctx.lineTo(130, 65);
+              }
+              if(guesses > 1){
+                ctx.moveTo(120, 90);
+                ctx.lineTo(120, 140);
+                if(guesses > 2){
+                  ctx.moveTo(120, 140);
+                  ctx.lineTo(110, 165);
+                  if(guesses > 3){
+                    ctx.moveTo(120, 140);
+                    ctx.lineTo(130, 165);
+                    if(guesses > 4){
+                      ctx.moveTo(120, 90);
+                      ctx.lineTo(110, 105);
+                      if(guesses > 5){
+                        ctx.moveTo(120, 90);
+                        ctx.lineTo(130, 105);
+                        if(guesses > 6){
+                          ctx.moveTo(110, 165);
+                          ctx.lineTo(105, 165);
+                          if(guesses > 7){
+                            ctx.moveTo(130, 165);
+                            ctx.lineTo(135, 165);
+                            if(guesses > 8){
+                              ctx.moveTo(110, 105);
+                              ctx.lineTo(105, 105);
+                              if(guesses > 9){
+                                ctx.moveTo(130, 105);
+                                ctx.lineTo(135, 105);
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            ctx.stroke();
+          }
+        });
+      }
+      window.addEventListener("load", async () => {
+        await firebase.auth().signInAnonymously();
+        document.querySelector("#join").addEventListener("click", () => {
+          switchView("connecting");
+          setupPlayer();
+          player.joinRoom(document.querySelector("#gameCode").value);
+        });
+        document.querySelector("#host").addEventListener("click", async () => {
+          switchView("connecting");
+          host = new PWFHostClient({
+            db: firebase.firestore(),
+            uid: firebase.auth().currentUser.uid,
+            memberLimit: 10,
+            yaww: {
+              rtc: {
+                iceServers: [
+                  {
+                    urls: "stun:stun.l.google.com:19302"
+                  },
+                  {
+                    urls: "turn:0.peerjs.com:3478",
+                    username:"peerjs",
+                    credential:"peerjsp"
+                  }
+                ]
+              }
+            }
+          });
+          host.addEventListener("join", e => {
+            const newPlayer = e.member;
+
+            players[newPlayer.id] = newPlayer;
+
+            const playerBtn = document.createElement("BUTTON");
+            playerBtn.id = newPlayer.id;
+            playerBtn.textContent = (newPlayer.id === player.id ? "Host" : newPlayer.id);
+            playerBtn.addEventListener("click", () => {
+              newPlayer.kick();
+            });
+
+            newPlayer.addEventListener("leave", () => {
+              playerBtn.remove();
+              delete players[newPlayer.id];
+            });
+
+            newPlayer.addEventListener("message", e => {
+              const message = JSON.parse(e.message);
+              if(!message.type){
+                return;
+              }
+              if(message.type === "name"){
+                playerBtn.textContent = message.name || newPlayer.id;
+              }else if(message.type === "word"){
+                if(players[newPlayer.id].pickingWord && message.word && message.word.match(/\w{5,16}/g) && message.word.match(/\w{5,16}/g).join("") === message.word && !goal){
+                  goal = message.word.toLowerCase();
+                  status = goal.split("").map(c => "_").join("");
+                  host.sendAll(JSON.stringify({
+                    type: "status",
+                    status: status,
+                    guessed: guessed
+                  }));
+                }
+              }else if(message.type === "guess"){
+                if(!players[newPlayer.id].pickingWord && message.guess && message.guess.length === 1 && !guessed.includes(message.guess.toLowerCase()) && status !== goal){
+                  if(goal.includes(message.guess.toLowerCase())){
+                    status = status.split("").map((c, i) => (goal[i] === message.guess.toLowerCase() ? goal[i] : c)).join("");
+                    if(status === goal){
+                      setTimeout(() => {
+                        host.unlock();
+                        status = "";
+                        goal = "";
+                        guessed = [];
+                        host.sendAll(JSON.stringify({
+                          type: "menu"
+                        }));
+                      }, 3000);
+                    }
+                  }else{
+                    guessed.push(message.guess.toLowerCase());
+                    if(guessed.length > Math.min(18 - goal.length, 10)){
+                      status = goal;
+                      setTimeout(() => {
+                        host.unlock();
+                        status = "";
+                        goal = "";
+                        guessed = [];
+                        host.sendAll(JSON.stringify({
+                          type: "menu"
+                        }));
+                      }, 3000);
+                    }
+                  }
+                  host.sendAll(JSON.stringify({
+                    type: "status",
+                    status: status,
+                    guessed: guessed
+                  }));
+                }
+              }
+            });
+
+            document.querySelector("#players").append(playerBtn);
+          });
+
+          const roomCode = await host.createRoom();
+          document.querySelector("#gameCodeDisplay").textContent = roomCode;
+          setupPlayer();
+          player.joinRoom(roomCode);
+        });
+        document.querySelector("#close").addEventListener("click", e => {
+          host.close();
+        });
+        document.querySelector("#start").addEventListener("click", e => {
+          host.lock();
+          const chooser = Object.keys(players)[Math.floor(Object.keys(players).length * Math.random())];
+
+          for(p in players){
+            if(p === chooser){
+              players[p].pickingWord = true;
+              players[p].send(JSON.stringify({
+                type: "pickWord"
+              }));
+              setTimeout(() => {
+                if(!goal){
+                  players[p].pickingWord = false;
+                  goal = words[Math.floor(words.length * Math.random())];
+                  status = goal.split("").map(c => "_").join("");
+                  host.sendAll(JSON.stringify({
+                    type: "status",
+                    status: status,
+                    guessed: guessed
+                  }));
+                }
+              }, 25000);
+            }else{
+              players[p].pickingWord = false;
+              players[p].send(JSON.stringify({
+                type: "waitingForPickWord"
+              }));
+            }
+          }
+        });
+
+        document.querySelector("#changeName").addEventListener("click", () => {
+          player.send(JSON.stringify({
+            type: "name",
+            name: document.querySelector("#name").value
+          }));
+        });
+
+        document.querySelector("#submitWord").addEventListener("click", () => {
+          player.send(JSON.stringify({
+            type: "word",
+            word: document.querySelector("#wordInput").value
+          }));
+          document.querySelector("#wordInput").value = "";
+        });
+
+        document.querySelector("#submitGuess").addEventListener("click", () => {
+          player.send(JSON.stringify({
+            type: "guess",
+            guess: document.querySelector("#guess").value
+          }));
+          document.querySelector("#guess").value = "";
+        });
+      });
+    </script>
+  </body>
+</html>

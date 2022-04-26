@@ -1,0 +1,144 @@
+rules_version = "2"
+
+service cloud.firestore {
+  function hasExactly(keys){
+    return request.resource.data.keys().hasAll(keys) && request.resource.data.keys().hasOnly(keys);
+  }
+
+  function changedOnly(keys){
+    return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+  }
+
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false; 
+    }
+
+    match /rooms/{room} {
+      allow create: if
+        request.auth != null &&
+        hasExactly(["locked", "timestamp", "host_uid"]) &&
+        request.resource.data.locked is bool &&
+        request.resource.data.timestamp is timestamp &&
+        request.resource.data.host_uid == request.auth.uid &&
+        request.resource.data.timestamp == request.time;
+      allow get: if request.auth != null;
+      allow update: if
+        request.auth != null &&
+        request.auth.uid == resource.data.host_uid &&
+        changedOnly(["locked"]) &&
+        request.resource.data.locked is bool
+      allow delete: if
+        request.auth != null &&
+        request.auth.uid == resource.data.host_uid;
+      allow list: if false;
+
+      match /members/{document=**} {
+        allow list: if
+          request.auth != null &&
+          exists(/databases/$(database)/documents/rooms/$(room)) &&
+          request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid
+      }
+
+      match /members/{member} {
+        allow create: if 
+          request.auth != null &&
+          exists(/databases/$(database)/documents/rooms/$(room)) &&
+          !get(/databases/$(database)/documents/rooms/$(room)).data.locked &&
+          hasExactly(["member_uid", "host_uid", "timestamp", "host_sdp", "member_sdp"]) &&
+          request.resource.data.timestamp is timestamp &&
+          request.resource.data.host_sdp is string &&
+          request.resource.data.member_sdp is string &&
+          request.resource.data.timestamp == request.time &&
+          request.resource.data.member_uid == request.auth.uid &&
+          request.resource.data.host_uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid &&
+          request.resource.data.host_sdp.size() == 0;
+        allow get, delete: if
+          request.auth != null &&
+          (
+            !exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) ||
+            request.auth.uid == resource.data.member_uid || 
+            request.auth.uid == resource.data.host_uid
+          );
+        allow list: if
+          request.auth != null &&
+          request.auth.uid == resource.data.host_uid;
+        allow update: if
+          request.auth != null &&
+          (
+            !exists(/databases/$(database)/documents/rooms/$(room)/members/$(member))
+          || (
+            request.auth.uid == resource.data.member_uid &&
+            changedOnly(["member_sdp"]) &&
+            request.resource.data.member_sdp.size() < 1000
+          ) || (
+            request.auth.uid == resource.data.host_uid &&
+            changedOnly(["host_sdp"]) &&
+            request.resource.data.host_sdp.size() < 1000
+          ));
+        
+        match /host_candidates/{document=**} {
+          allow list: if
+            request.auth != null &&
+            ((
+              exists(/databases/$(database)/documents/rooms/$(room)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid
+            ) || (
+              exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.member_uid
+            ));
+        }
+
+        match /host_candidates/{candidate} {
+          allow create, update: if
+            request.auth != null &&
+            exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+            request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.host_uid &&
+            hasExactly(["candidate"]) &&
+            request.resource.data.candidate is string &&
+            request.resource.data.candidate.size() < 350;
+          allow read, delete: if
+            request.auth != null &&
+            ((
+              exists(/databases/$(database)/documents/rooms/$(room)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid
+            ) || (
+              exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.member_uid
+            ));
+        }
+
+        match /member_candidates/{document=**} {
+          allow list: if
+            request.auth != null &&
+            ((
+              exists(/databases/$(database)/documents/rooms/$(room)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid
+            ) || (
+              exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.member_uid
+            ));
+        }
+
+        match /member_candidates/{candidate} {
+          allow create, update: if
+            request.auth != null &&
+            exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+            request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.member_uid &&
+            hasExactly(["candidate"]) &&
+            request.resource.data.candidate is string &&
+            request.resource.data.candidate.size() < 350;
+          allow read, delete: if
+            request.auth != null &&
+            ((
+              exists(/databases/$(database)/documents/rooms/$(room)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)).data.host_uid
+            ) || (
+              exists(/databases/$(database)/documents/rooms/$(room)/members/$(member)) &&
+              request.auth.uid == get(/databases/$(database)/documents/rooms/$(room)/members/$(member)).data.member_uid
+            ));
+        }
+      }
+    }
+  }
+}
